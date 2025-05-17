@@ -1,0 +1,1 @@
+compute make model go brr. rl use more compute to make model go more brr. rl need generate. harness do generate. harness make rl make model go brr. agi.
