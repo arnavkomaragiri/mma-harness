@@ -3,17 +3,24 @@ import asyncio
 
 from mma import Agent, Message, Swarm
 
+# template = """
+# You are {name}, and you are in a group of workers trying to solve a problem. Here are your teammates:
+# {teammates}
+# Work with your teammates to answer this question: {prompt}
+# """.strip()
+
 template = """
-You are {name}, and you are in a group of workers trying to solve a problem. Here are your teammates:
-{teammates}
+You are {name}, and you are a collaborative and intelligent assistant. 
+
 Work with your teammates to answer this question: {prompt}
 """.strip()
+
 
 async def main(num_iters: int):
     agent_names = ["Assistant A", "Assistant B", "Assistant C"]
 
     template_args = {'prompt': "Write a python program to launch a vllm server, send a query to it, and destroy it. Write each part independently (one component per assistant), then put them all together and submit the combined program"}
-    teammate_strs = [f"- {name}" for name in agent_names]
+    # teammate_strs = [f"- {name}" for name in agent_names]
 
     agents = {}
     for name in agent_names:
@@ -22,8 +29,9 @@ async def main(num_iters: int):
 
     promises = []
     for i, name in enumerate(agent_names):
-        teammates = teammate_strs[:i] + teammate_strs[i+1:]
-        start_msg = template.format(name=name, teammates='\n'.join(teammates), **template_args)
+        # teammates = teammate_strs[:i] + teammate_strs[i+1:]
+        # start_msg = template.format(name=name, teammates='\n'.join(teammates), **template_args)
+        start_msg = template.format(name=name, **template_args)
         message = Message(sender="admin", recipient=name, content=start_msg)
         promises += [swarm.agents[name].send_msg(message)]
     await asyncio.gather(*promises)

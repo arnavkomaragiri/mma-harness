@@ -11,6 +11,10 @@ class Swarm:
     def __init__(self, agents: dict[str, Agent], answers: dict[str, str] = None, active: dict[str, bool] = None):
         self.agents = agents
 
+        for name, agent in self.agents.items():
+            if not agent.registered:
+                self.agents[name].add_agent_registry(lambda: self.registry())
+
         if answers is None:
             answers = {k: None for k in agents.keys()}
         if active is None:
@@ -21,6 +25,9 @@ class Swarm:
     
     def is_active(self) -> Self:
         return any([a for a in self.active.values()])
+
+    def registry(self) -> str:
+        return '\n'.join([f'- {name}' for name in self.agents.keys()])
 
     async def step(self) -> Self:
         active_agents = {a: self.agents[a] for a, active in self.active.items() if active}

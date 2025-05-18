@@ -6,26 +6,6 @@ from typing import Union, Self, Callable
 
 Chat = dict[str, Union[int, float, str]]
 
-class Message(BaseModel):
-    sender: str
-    recipient: str
-    content: str
-
-    def __str__(self):
-        return f"From: {self.sender}\nTo: {self.recipient}\nContent:\n{self.content}"
-
-def identity_aggregator(msgs: list[Message]) -> list[Message]:
-    return msgs
-
-def user_formatter(msgs: list[Message], template: str = "{content}") -> Chat:
-    return {
-        "role": "user",
-        "content": template.format(content="You have received the following messages:\n" + "\n\n".join([str(msg) for msg in msgs]))
-    }
-
-def no_tools(chat: Chat):
-    return []
-
 DEFAULT_TOOLS = [
     {
         "type": "function",
@@ -59,6 +39,14 @@ DEFAULT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "get_registry",
+            "description": "Get a list of all currently available teammates to work with.",
+            "parameters": {}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "submit",
             "description": "Submit a final answer to a question after collaborating with teammates.",
             "parameters": {
@@ -72,6 +60,26 @@ DEFAULT_TOOLS = [
     }
 ]
 
+class Message(BaseModel):
+    sender: str
+    recipient: str
+    content: str
+
+    def __str__(self):
+        return f"From: {self.sender}\nTo: {self.recipient}\nContent:\n{self.content}"
+
+def identity_aggregator(msgs: list[Message]) -> list[Message]:
+    return msgs
+
+def user_formatter(msgs: list[Message], template: str = "{content}") -> Chat:
+    return {
+        "role": "user",
+        "content": template.format(content="You have received the following messages:\n" + "\n\n".join([str(msg) for msg in msgs]))
+    }
+
+def no_tools(chat: Chat):
+    return []
+
 class Agent:
     name: str
     chats: list[Chat] 
@@ -79,6 +87,10 @@ class Agent:
     llm: Callable[[list[Chat]], Chat]
     aggregator: Callable[[list[Message]], list[Message]]
     formatter: Callable[[list[Message], str], str]
+    tool_processor: Callable[[Chat], list[Chat]]
+
+    template: str
+    tools: list[dict]
 
     queue: asyncio.Queue
 
@@ -109,7 +121,15 @@ class Agent:
         self.template = template
         self.queue = asyncio.Queue(max_msgs)
 
+        self.registry_func = lambda: None
+        self.registered = False
+
         self.tools = DEFAULT_TOOLS + extra_tools
+    
+    def add_agent_registry(self, registry_func: Callable[[], str]) -> Self:
+        self.registry_func = registry_func
+        self.registered = True
+        return self
 
     async def send_msg(self, msg: Message) -> Self:
         await self.queue.put(msg)
@@ -128,7 +148,9 @@ class Agent:
                     # add a placeholder recipient for broadcast and let swarm handle the individual messages
                     resps += [Message(sender=self.name, recipient="all", content=arguments['message'])]
                 case _:
-                    raise ValueError(f"found unrecognized tool call: {name}")
+                    valid_tool = any([tool['function']['name'] == name for tool in self.tools])
+                    if not valid_tool:
+                        raise ValueError(f"found unrecognized tool call: {name}")
         return resps
     
     async def step(self) -> tuple[Self, list[Message]]:
@@ -152,6 +174,15 @@ class Agent:
         if len(tool_calls) > 0:
             messages = self.extract_tool_msgs(tool_calls)
             tool_resps = self.tool_processor(tool_calls)
+
+            for call in tool_calls:
+                # TODO: make this cleaner and bring it into a non_msg tool call func or something idk just do something not thought up at like 3am
+                if call['function']['name'] == 'get_registry':
+                    tool_resps += [{
+                        'tool_call_id': call['id'],
+                        'role': 'tool',
+                        'content': self.registry_func()
+                    }]                    
             self.chats += tool_resps
         return self, messages
 
