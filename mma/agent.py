@@ -111,12 +111,11 @@ class Agent:
 
         self.tools = DEFAULT_TOOLS + extra_tools
 
-    async def recv_msg(self, msg: Message) -> Self:
+    async def send_msg(self, msg: Message) -> Self:
         await self.queue.put(msg)
         return self
 
     def extract_tool_msgs(self, tool_calls: list[dict]) -> list[Message]:
-        # TOOD: implement message parsing
         resps = []
         for call in tool_calls:
             name, arguments = call['function']['name'], json.loads(call['function']['arguments'])
@@ -126,7 +125,7 @@ class Agent:
                 case 'send':
                     resps += [Message(sender=self.name, recipient=arguments['recipient'], content=arguments['message'])]
                 case 'broadcast':
-                    # add a placeholder string for broadcast and let swarm handle the individual messages
+                    # add a placeholder recipient for broadcast and let swarm handle the individual messages
                     resps += [Message(sender=self.name, recipient="all", content=arguments['message'])]
                 case _:
                     raise ValueError(f"found unrecognized tool call: {name}")

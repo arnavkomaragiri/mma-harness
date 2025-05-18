@@ -25,12 +25,12 @@ async def main(num_iters: int):
         teammates = teammate_strs[:i] + teammate_strs[i+1:]
         start_msg = template.format(name=name, teammates='\n'.join(teammates), **template_args)
         message = Message(sender="admin", recipient=name, content=start_msg)
-        promises += [swarm.agents[name].recv_msg(message)]
+        promises += [swarm.agents[name].send_msg(message)]
     await asyncio.gather(*promises)
 
     # start main loop
     for _ in range(num_iters):
-        if len([a for a in swarm.answers.values() if a is not None]) == len(agent_names):
+        if not swarm.is_active():
             break
         swarm = await swarm.step()
     
