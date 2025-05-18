@@ -30,6 +30,8 @@ class Swarm:
                 self.answers[msg.sender] = msg.content
             elif msg.recipient not in agents:
                 print(f"message addressed to agent not in agents ({', '.join(agents.keys())}):\n\n{str(msg)}")
+                error_msg = Message(sender="admin", recipient=msg.sender, content=f"error: message recipient '{msg.recipient}' not found, recipient must be in group {', '.join(agents.keys())}")
+                futures += [agents[msg.sender].recv_msg(error_msg)]
             else:
                 futures += [agents[msg.recipient].recv_msg(msg)]
         await asyncio.gather(*futures)

@@ -24,10 +24,7 @@ def user_formatter(msgs: list[Message], template: str = "{content}") -> Chat:
     }
 
 def no_tools(chat: Chat):
-    return None
-
-def openai_tool_processor(chat: Chat):
-    return chat['tool_calls']
+    return []
 
 DEFAULT_TOOLS = [
     {
@@ -76,14 +73,14 @@ DEFAULT_TOOLS = [
 ]
 
 class Agent:
-    # name: str
-    # chats: list[Chat] 
+    name: str
+    chats: list[Chat] 
 
-    # llm: Callable[[list[Chat]], Chat]
-    # aggregator: Callable[[list[Message]], list[Message]]
-    # formatter: Callable[[list[Message], str], str]
+    llm: Callable[[list[Chat]], Chat]
+    aggregator: Callable[[list[Message]], list[Message]]
+    formatter: Callable[[list[Message], str], str]
 
-    # queue: asyncio.Queue
+    queue: asyncio.Queue
 
     def __init__(
             self, 
@@ -91,7 +88,7 @@ class Agent:
             llm: Callable[[list[Chat], list[dict]], Chat],
             aggregator: Callable[[list[Message]], list[Message]],
             formatter: Callable[[list[Message], str], Chat],
-            tool_processor: Callable[[Chat], Chat],
+            tool_processor: Callable[[Chat], list[Chat]],
             chats: list[dict[str, Union[int, str]]] = None,
             extra_tools: list[dict] = None,
             template: str = "{content}",
@@ -139,7 +136,9 @@ class Agent:
         msgs: list[Message] = []
         while not self.queue.empty():
             msgs += [await self.queue.get()]
-        if len(msgs) == 0: # TODO: add an edge case here for prior tool calls
+        
+        # if we haven't received a message or aren't expecting any tool responses, just idle
+        if len(msgs) == 0 and self.chats[-1]['role'] != 'tool':
             return self, []
         
         comb_msgs = self.aggregator(msgs) 
@@ -147,25 +146,25 @@ class Agent:
 
         self.chats += [chat]
         resp = self.llm(self.chats, tools=self.tools)
-        tool_resp = self.tool_processor(resp)
+        tool_calls = resp['tool_calls']
         self.chats += [resp]
 
-        # TODO: add non-comms tool responses to chat history
-
         messages = []
-        if tool_resp is not None:
-            messages = self.extract_tool_msgs(tool_resp)
+        if len(tool_calls) > 0:
+            messages = self.extract_tool_msgs(tool_calls)
+            tool_resps = self.tool_processor(tool_calls)
+            self.chats += tool_resps
         return self, messages
 
     @staticmethod
     def get_default_funcs(
         aggregator: Callable[[list[Message]], list[Message]] = None, 
         formatter: Callable[[list[Message], str], Chat] = None,
-        tool_processor: Callable[[Chat], Chat] = None,
+        tool_processor: Callable[[Chat], list[Chat]] = None,
     ) -> tuple[Callable, Callable, Callable]:
         if aggregator is None: aggregator = identity_aggregator
         if formatter is None: formatter = user_formatter
-        if tool_processor is None: tool_processor = openai_tool_processor
+        if tool_processor is None: tool_processor = no_tools
 
         return aggregator, formatter, tool_processor
 
@@ -175,7 +174,7 @@ class Agent:
         model_name: str, 
         aggregator: Callable[[list[Message]], list[Message]] = None, 
         formatter: Callable[[list[Message], str], Chat] = None,
-        tool_processor: Callable[[Chat], Chat] = None,
+        tool_processor: Callable[[Chat], list[Chat]] = None,
         template: str = "{content}",
         chats: list[dict] = None,
         extra_tools: list[dict] = None,
@@ -206,7 +205,7 @@ class Agent:
         api_key: str = "EMPTY",
         aggregator: Callable[[list[Message]], list[Message]] = None, 
         formatter: Callable[[list[Message], str], Chat] = None,
-        tool_processor: Callable[[Chat], Chat] = None,
+        tool_processor: Callable[[Chat], list[Chat]] = None,
         chats: list[dict] = None, 
         extra_tools: list[dict] = None,
         template: str = "{content}",
