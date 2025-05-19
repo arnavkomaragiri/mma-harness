@@ -5,10 +5,16 @@ from functools import reduce
 from typing import Self
 from .agent import Agent, Message
 
+
 class Swarm:
     agents: dict[str, Agent]
 
-    def __init__(self, agents: dict[str, Agent], answers: dict[str, str] = None, active: dict[str, bool] = None):
+    def __init__(
+        self,
+        agents: dict[str, Agent],
+        answers: dict[str, str] = None,
+        active: dict[str, bool] = None,
+    ):
         self.agents = agents
 
         for name, agent in self.agents.items():
@@ -22,17 +28,21 @@ class Swarm:
 
         self.active = active
         self.answers = answers
-    
+
     def is_active(self) -> Self:
         return any([a for a in self.active.values()])
 
     def registry(self) -> str:
-        return '\n'.join([f'- {name}' for name in self.agents.keys()])
+        return "\n".join([f"- {name}" for name in self.agents.keys()])
 
     async def step(self) -> Self:
-        active_agents = {a: self.agents[a] for a, active in self.active.items() if active}
+        active_agents = {
+            a: self.agents[a] for a, active in self.active.items() if active
+        }
 
-        results = await asyncio.gather(*[agent.step() for agent in active_agents.values()])
+        results = await asyncio.gather(
+            *[agent.step() for agent in active_agents.values()]
+        )
         agents, messages = list(zip(*results))
         agents, messages = list(agents), list(messages)
 
@@ -40,7 +50,6 @@ class Swarm:
         messages = reduce(lambda a, b: a + b, messages)
 
         agents = {agent.name: agent for agent in agents}
-        # print(list(agents.keys()))
 
         def send_msg(recp, msg):
             if not self.active[recp]:
@@ -56,8 +65,14 @@ class Swarm:
                 self.answers[msg.sender] = msg.content
                 self.active[msg.sender] = False
             elif msg.recipient not in agents:
-                print(f"message addressed to agent not in agents ({', '.join(agents.keys())}):\n\n{str(msg)}")
-                error_msg = Message(sender="admin", recipient=msg.sender, content=f"error: message recipient '{msg.recipient}' not found, recipient must be in group {', '.join(agents.keys())}")
+                print(
+                    f"message addressed to agent not in agents ({', '.join(agents.keys())}):\n\n{str(msg)}"
+                )
+                error_msg = Message(
+                    sender="admin",
+                    recipient=msg.sender,
+                    content=f"error: message recipient '{msg.recipient}' not found, recipient must be in group {', '.join(agents.keys())}",
+                )
                 futures += [agents[msg.sender].send_msg(error_msg)]
             else:
                 futures += [send_msg(msg.recipient, msg)]
