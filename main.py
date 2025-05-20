@@ -1,48 +1,71 @@
+import os
 import json
 import asyncio
 
+from tqdm import tqdm, trange
 from mma import Agent, Message, Swarm
 
 template = """
 You are {name}, and you are in a group of workers trying to solve a problem. Here are your teammates:
 {teammates}
-Work with your teammates to answer this question: {prompt}
+Make sure to use the tools provided to communicate with your teammates; solely chatting will not be sufficient.
 """.strip()
+
+leader_template = """
+You are the leader of a group of workers, and you are trying to solve a problem. Here are your teammates:
+{teammates}
+Work with your teammates to answer this question: {prompt}
+Make sure to use the tools provided to communicate with your teammates; solely chatting will not be sufficient.
+""".strip()
+
+USE_EXTERNAL = False
 
 
 async def main(num_iters: int):
-    agent_names = ["Assistant A", "Assistant B", "Assistant C"]
+    agent_names = ["Assistant A", "Assistant B", "Assistant C", "Leader"]
 
     template_args = {
-        "prompt": "Write a python program to launch a vllm server, send a query to it, and destroy it. Write each part independently (one component per assistant), then put them all together and submit the combined program"
+        "prompt": "Write a python program to launch a vllm server, send a query to it, and destroy it."
     }
     teammate_strs = [f"- {name}" for name in agent_names]
 
     agents = {}
     for i, name in enumerate(agent_names):
-        teammates = teammate_strs[:i] + teammate_strs[i + 1 :]
-        start_msg = template.format(
-            name=name, teammates="\n".join(teammates), **template_args
+        extra_args = {}
+
+        msg_template = template
+        if name == "Leader":
+            extra_args = template_args
+            msg_template = leader_template
+
+        start_msg = msg_template.format(
+            name=name, teammates="\n".join(teammate_strs[:i] + teammate_strs[i+1:]), **extra_args
         )
+
         chats = [{"role": "user", "content": start_msg}]
-        agents[name] = Agent.from_vllm_server(
+
+        if USE_EXTERNAL:
+            kwargs = {
+                'model_name': "gemini-2.5-flash-preview-04-17",
+                'url': "https://generativelanguage.googleapis.com/v1beta/openai/",
+                'api_key': os.getenv('API_KEY'),
+            }
+        else:
+            kwargs = {
+                'model_name': "Qwen/Qwen3-4B-FP8",
+                'url': 'http://localhost:8000/v1',
+                'tool_choice': 'auto',
+                'parallel_tool_calls': True
+            }
+        agents[name] = Agent.from_server(
             name=name,
-            model_name="Qwen/Qwen3-4B-FP8",
-            url="http://localhost:8000/v1",
             chats=chats,
+            **kwargs
         )
     swarm = Swarm(agents)
 
-    # promises = []
-    # for i, name in enumerate(agent_names):
-
-    #     start_msg = template.format(name=name, **template_args)
-    #     message = Message(sender="supervisor", recipient=name, content=start_msg)
-    #     promises += [swarm.agents[name].send_msg(message)]
-    # await asyncio.gather(*promises)
-
     # start main loop
-    for _ in range(num_iters):
+    for _ in trange(num_iters):
         if not swarm.is_active():
             break
         swarm = await swarm.step()

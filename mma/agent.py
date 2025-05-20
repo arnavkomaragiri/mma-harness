@@ -84,7 +84,7 @@ def merge_chats(chats: list[Chat], delimiter: str = "\n\n") -> list[Chat]:
         ):  # only merge user messages
             merged = {"role": last_role, "content": running_content}
             if chats[i - 1]["role"] == "tool":
-                merged["tool_call_id"] = chats[i - 1]["tool_call_id"]
+                merged["tool_call_id"] = chats[i - 1].get("tool_call_id", "")
             elif chats[i - 1]["role"] == "assistant":
                 merged["tool_calls"] = chats[i - 1]["tool_calls"]
             merged_chats += [merged]
@@ -94,7 +94,7 @@ def merge_chats(chats: list[Chat], delimiter: str = "\n\n") -> list[Chat]:
             running_content += delimiter + chats[i]["content"]
     merged = {"role": last_role, "content": running_content}
     if chats[-1]["role"] == "tool":
-        merged["tool_call_id"] = chats[i - 1]["tool_call_id"]
+        merged["tool_call_id"] = chats[i - 1].get("tool_call_id", "")
     elif chats[-1]["role"] == "assistant":
         merged["tool_calls"] = chats[i - 1]["tool_calls"]
     merged_chats += [merged]
@@ -153,6 +153,7 @@ class Agent:
         extra_tools: list[dict] = None,
         template: str = "{content}",
         max_msgs: int = 0,
+        is_leader: bool = False
     ):
         if chats is None:
             chats = []
@@ -161,6 +162,7 @@ class Agent:
             extra_tools = []
 
         self.name = name
+        self.is_leader = is_leader
         self.llm = llm
         self.aggregator = aggregator
         self.formatter = formatter
@@ -172,7 +174,10 @@ class Agent:
         self.registry_func = lambda: None
         self.registered = False
 
-        self.tools = DEFAULT_TOOLS + extra_tools
+        base_tools = DEFAULT_TOOLS
+        if not is_leader:
+            base_tools = [b for b in base_tools if b['function']['name'] != 'submit']
+        self.tools = base_tools + extra_tools
 
     def add_agent_registry(self, registry_func: Callable[[], str]) -> Self:
         self.registry_func = registry_func
@@ -234,13 +239,23 @@ class Agent:
             chat = self.formatter(comb_msgs, template=self.template)
             self.chats += [chat]
 
-        # if we've already responded to something, just idle
-        if self.chats[-1]["role"] == "assistant":
+        # if we've already responded to something or haven't received anything, just idle
+        if self.chats[-1]["role"] == "assistant" or len(self.chats) == 0:
             return self, []
 
         self.chats = merge_chats(self.chats)
-        resp = self.llm(self.chats, tools=self.tools)
-        tool_calls = resp["tool_calls"]
+        try:
+            resp = self.llm(self.chats, tools=self.tools)
+        except Exception as e:
+            # print("CHATS THAT CAUSED THE ERROR")
+            # print(json.dumps(self.chats, indent=2))
+            # print("END")
+            raise e
+        if resp['content'] is None:
+            resp['content'] = ""
+        if resp['tool_calls'] is None:
+            resp['tool_calls'] = []
+        tool_calls = resp['tool_calls']
         self.chats += [resp]
 
         messages = []
@@ -286,6 +301,7 @@ class Agent:
         template: str = "{content}",
         chats: list[dict] = None,
         extra_tools: list[dict] = None,
+        is_leader: bool = False,
         **init_kwargs,
     ) -> Self:
         from vllm import LLM
@@ -309,10 +325,11 @@ class Agent:
             template=template,
             chats=chats,
             extra_tools=extra_tools,
+            is_leader=is_leader
         )
 
     @staticmethod
-    def from_vllm_server(
+    def from_server(
         name: str,
         model_name: str,
         url: str,
@@ -323,6 +340,7 @@ class Agent:
         chats: list[dict] = None,
         extra_tools: list[dict] = None,
         template: str = "{content}",
+        is_leader: bool = False,
         **kwargs,
     ) -> Self:
         from openai import OpenAI
@@ -344,9 +362,7 @@ class Agent:
                 client.chat.completions.create(
                     model=model_name,
                     messages=chats,
-                    tool_choice="auto",
-                    parallel_tool_calls=True,
-                    **kwargs,
+                    **kwargs
                 )
                 .choices[0]
                 .message.dict()
@@ -361,4 +377,5 @@ class Agent:
             template=template,
             chats=chats,
             extra_tools=extra_tools,
+            is_leader=is_leader
         )
