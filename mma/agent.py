@@ -48,7 +48,7 @@ DEFAULT_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "get_registry",
+            "name": "get_teammates",
             "description": "Get a list of all currently available teammates to work with.",
             "parameters": {},
         },
@@ -228,11 +228,14 @@ class Agent:
                         raise ValueError(f"found unrecognized tool call: {name}")
         return resps
 
-    async def step(self) -> tuple[Self, list[Message]]:
+    async def step(self, wait_for_msgs: bool = False) -> tuple[Self, list[Message]]:
+        # never wait for messages if the leader
+        wait_for_msgs = wait_for_msgs and (not self.is_leader)
+
         msgs: list[Message] = []
         while not self.queue.empty():
             msgs += [await self.queue.get()]
-
+        
         # process any messages we've received
         if len(msgs) != 0:
             comb_msgs = self.aggregator(msgs)
@@ -240,17 +243,16 @@ class Agent:
             self.chats += [chat]
 
         # if we've already responded to something or haven't received anything, just idle
-        if self.chats[-1]["role"] == "assistant" or len(self.chats) == 0:
+        if self.chats[-1]["role"] == "assistant" or len(self.chats) == 0 or (wait_for_msgs and len(msgs) == 0):
             return self, []
 
         self.chats = merge_chats(self.chats)
+
         try:
             resp = self.llm(self.chats, tools=self.tools)
         except Exception as e:
-            # print("CHATS THAT CAUSED THE ERROR")
-            # print(json.dumps(self.chats, indent=2))
-            # print("END")
             raise e
+
         if resp['content'] is None:
             resp['content'] = ""
         if resp['tool_calls'] is None:
@@ -265,7 +267,7 @@ class Agent:
 
             for call in tool_calls:
                 # TODO: make this cleaner and bring it into a non_msg tool call func or something idk just do something not thought up at like 3am
-                if call["function"]["name"] == "get_registry":
+                if call["function"]["name"] == "get_teammates":
                     tool_resps += [
                         {
                             "tool_call_id": call["id"],
@@ -358,19 +360,117 @@ class Agent:
             elif len(tools) != 0:
                 kwargs["tools"] = tools
 
+            completion = client.chat.completions.create(
+                model=model_name,
+                messages=chats,
+                **kwargs
+            )
+            if completion.choices[0].message is None:
+                print(completion)
+
             return (
-                client.chat.completions.create(
-                    model=model_name,
-                    messages=chats,
-                    **kwargs
-                )
-                .choices[0]
-                .message.dict()
+                completion.choices[0].message.dict()
             )
 
         return Agent(
             name,
             llm_func,
+            aggregator,
+            formatter,
+            tool_processor,
+            template=template,
+            chats=chats,
+            extra_tools=extra_tools,
+            is_leader=is_leader
+        )
+
+    @staticmethod
+    def from_gemini(
+        name: str,
+        model_name: str,
+        api_key: str = "EMPTY",
+        aggregator: Callable[[list[Message]], list[Message]] = None,
+        formatter: Callable[[list[Message], str], Chat] = None,
+        tool_processor: Callable[[Chat], list[Chat]] = None,
+        chats: list[dict] = None,
+        extra_tools: list[dict] = None,
+        template: str = "{content}",
+        is_leader: bool = False,
+        role_map: dict = None,
+        **kwargs,
+    ) -> Self:
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=api_key)
+        role_map = role_map or {"user": "user", "assistant": "model", "function": "tool", "tool": "tool"}
+
+        def _convert_tools(oai_tools):
+            gemini_tools: list[types.Tool] = []
+            for t in oai_tools or []:
+                if isinstance(t, types.Tool):
+                    gemini_tools.append(t)
+                else:
+                    t = t['function']
+                    decl = types.FunctionDeclaration(
+                        name=t["name"],
+                        description=t.get("description", ""),
+                        parameters=t.get("parameters", {})
+                    )
+                    fn = t.get("function")
+                    if fn:
+                        setattr(decl, 'function', fn)
+                    gemini_tools.append(types.Tool(function_declarations=[decl]))
+            return gemini_tools
+
+        def chat(
+            openai_messages: list[Chat],
+            tools: list[types.Tool] | list[dict] | None = None,
+            tool_config: types.FunctionCallingConfig | None = None
+        ) -> Chat:
+            system = next((m["content"] for m in openai_messages if m["role"] == "system"), None)
+            contents: list[types.Content] = []
+            for m in openai_messages:
+                if m["role"] == "system":
+                    continue
+                gm_role = role_map.get(m["role"], m["role"])
+                contents.append(types.Content(role=gm_role, parts=[types.Part(text=m.get("content", ""))]))
+
+            gemini_tools = _convert_tools(tools)
+            if tool_config is None:
+                tool_config = types.FunctionCallingConfig(mode="AUTO")
+            config = types.GenerateContentConfig(
+                system_instruction=system,
+                tools=gemini_tools,
+                tool_config=tool_config,
+                safety_settings=[
+                    types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+                    types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+                    types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
+                    types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
+                    types.SafetySetting(category="HARM_CATEGORY_CIVIC_INTEGRITY", threshold="BLOCK_NONE")
+                ]
+            )
+            response = client.models.generate_content(model=model_name, contents=contents, config=config, **kwargs)
+            print(response)
+
+            fc_list = getattr(response, 'function_calls', None)
+            if fc_list:
+                oai_call = {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "name": f.name,
+                        "arguments": json.dumps(f.args)
+                    } for f in fc_list]
+                }
+                return oai_call
+
+            return {"role": "assistant", "content": response.text, "tool_calls": []}
+        
+        return Agent(
+            name,
+            chat,
             aggregator,
             formatter,
             tool_processor,

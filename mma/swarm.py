@@ -35,13 +35,13 @@ class Swarm:
     def registry(self) -> str:
         return "\n".join([f"- {name}" for name in self.agents.keys()])
 
-    async def step(self) -> Self:
+    async def step(self, **kwargs) -> Self:
         active_agents = {
             a: self.agents[a] for a, active in self.active.items() if active
         }
 
         results = await asyncio.gather(
-            *[agent.step() for agent in active_agents.values()]
+            *[agent.step(**kwargs) for agent in active_agents.values()]
         )
         agents, messages = list(zip(*results))
         agents, messages = list(agents), list(messages)
